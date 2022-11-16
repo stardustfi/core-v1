@@ -1,0 +1,9 @@
+node_modules/
+types/
+
+#Hardhat files
+cache/
+artifacts/
+.env
+
+deployments/*/solcInputs/
