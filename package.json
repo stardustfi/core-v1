@@ -35,6 +35,7 @@
     "@nomicfoundation/hardhat-network-helpers": "^1.0.6",
     "@typechain/ethers-v5": "^10.1.1",
     "@typechain/hardhat": "^6.1.4",
+    "solmate": "^6.6.1",
     "typechain": "^8.1.1"
   }
 }
