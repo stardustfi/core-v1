@@ -35,10 +35,13 @@ contract biddingOffer {
 
     /// @notice Fills a set loan position if lender sig is valid
     function poolFill(
-        address _account,
-        address _collateral,
-        address _borrowToken,
         address _lender,
+        address _borrower,
+        address _collateralToken,
+        uint256 _collateralAmount,
+        address _borrowToken,
+        uint256 _borrowAmount,
+        uint256 _expiryTime,
         uint8 v,
         bytes32 r,
         bytes32 s

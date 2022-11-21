@@ -114,7 +114,7 @@ contract Pool is Ownable {
         newLoan.expiryTime = _expiryTime;
         positionIds.push(key);
 
-        // transfer in the collateral - TODO: Create a signed tx that is spent later
+        // transfer in the collateral - (v1): Create a signed tx that is spent later
         IERC20(_collateralToken).safeTransferFrom(
             msg.sender,
             address(this),
@@ -147,7 +147,7 @@ contract Pool is Ownable {
                 break;
             }
         }
-        // transfer in the collateral - TODO: Create a signed tx that is spent later
+        // transfer in the collateral - (v1): Create a signed tx that is spent later
         IERC20(_collateralToken).safeTransfer(msg.sender, _collateralAmount);
     }
 
@@ -182,7 +182,7 @@ contract Pool is Ownable {
         // get requested borrow amount
         uint256 requestedAmount = positions[key].borrowAmount;
 
-        // TODO: Spend the signed tx, if we are implementing the signed tx
+        // (v1): Spend the signed tx, if we are implementing the signed tx
 
         // transfer USDC to borrower
         IERC20(_borrowToken).safeTransferFrom(
