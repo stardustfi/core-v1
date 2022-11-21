@@ -161,7 +161,6 @@ contract Pool is Ownable {
         uint256 _expiryTime
     ) external {
         // get position
-        // get position
         bytes32 key = getPositionKey(
             _borrower,
             _collateralToken,

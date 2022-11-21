@@ -6,8 +6,8 @@ import {ERC4626} from "@solmate/mixins/ERC4626.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {SafeMath} from "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {IPriceOracle} from "./IPriceOracle.sol";
-import {Pool} from "../Pool.sol";
+import {IPriceOracle} from "./integrations/IPriceOracle.sol";
+import {Pool} from "./Pool.sol";
 
 contract biddingPool is Ownable, ERC4626 {
     using SafeMath for uint256;
@@ -39,17 +39,24 @@ contract biddingPool is Ownable, ERC4626 {
         uint256 withdrawAmount;
     }
 
+    event WithdrawRequest(address withdrawAddress, uint256 withdrawAmount);
+
     mapping(uint256 => Auction) public auctions;
     mapping(bytes32 => Loan) public positions;
     mapping(address => bool) public isCollateral;
     mapping(address => uint8) public LTVs;
 
     WithdrawReq[] public withdrawalQueue;
+
     uint256 public maxDuration;
     uint256 public auctionDuration = 1 days;
     uint256 public AuctionID = 0;
     uint8 public withdrawalID = 0;
+
+
     error InvalidPosition(bytes32 key);
+    error InvalidRedeem(address redeemer, uint256 amount);
+    error BorrowNotCollateralized(address borrower, address collateral);
     error AuctionEnded(uint256 auctionID);
     error AuctionNotEnded(uint256 auctionID);
     error AuctionBidTooLow(uint256 auctionID);
@@ -81,6 +88,28 @@ contract biddingPool is Ownable, ERC4626 {
         borrowToken.approve(_PoolAddress, type(uint256).max);
     }
 
+    /// @notice Executes withdrawal request
+    modifier withdrawalRequest() {
+        for (uint256 i = withdrawalQueue.length; i > 0; i--) {
+            WithdrawReq memory withReq = withdrawalQueue[i];
+            if (
+                IERC20.withdrawToken.balanceOf(address(this)) <
+                withReq.withdrawAmount
+            ) {
+                // Not enough balance to withdraw, can force withdraw by calling Withdraw method on ERC4626
+                /// @notice could break things
+                continue;
+            } else if (
+                withReq.withdrawAmount <=
+                ERC4626.maxRedeem(withReq.withdrawAddress)
+            ) {
+                // Call _redeem on ERC4626 instead of redeem
+                _redeem(withReq.withdrawAddress, withReq.withdrawAmount);
+                delete withdrawalQueue[i];
+            }
+        }
+    }
+
     /*//////////////////////////////////////////////////////////////
                                 POOL FUNCTIONS
     */
@@ -88,26 +117,48 @@ contract biddingPool is Ownable, ERC4626 {
 
     /// @notice Fills a set loan position if it matches standard
     function poolFill(
-        address _account,
-        address _collateral,
-        address _borrowToken
-    ) public {
-        require(
-            _isBorrowCollateralized(_account, _collateral, _borrowToken),
-            "Borrower is not collateralized"
+        address _borrower,
+        address _collateralToken,
+        uint256 _collateralAmount,
+        address _borrowToken,
+        uint256 _borrowAmount,
+        uint256 _expiryTime
+    ) public withdrawalRequest {
+        if(!_isBorrowCollateralized(_borrower, 
+                                    _collateralToken, 
+                                    _collateralAmount, 
+                                    _borrowToken, 
+                                    _borrowAmount, 
+                                    _expiryTime)) {
+            revert BorrowNotCollateralized(_borrower, _collateralToken);
+        }
+
+        poolAddress.fill(
+            _borrower,
+            _collateralToken,
+            _collateralAmount,
+            _borrowToken,
+            _borrowAmount,
+            _expiryTime
         );
-        _withdrawalRequest();
-        poolAddress.fill(_account, _collateral, _borrowToken);
     }
 
     /// @notice Claims collateral from a loan position if not repaid
     /// claim logic is handled in the pool contract, lazy claim
     function poolClaim(
-        address _account,
-        address _collateral,
-        address _borrowToken
+        address _borrower,
+        address _collateralToken,
+        uint256 _collateralAmount,
+        address _borrowToken,
+        uint256 _borrowAmount,
+        uint256 _expiryTime
     ) public {
-        poolAddress.claim(_account, _collateral, _borrowToken);
+        poolAddress.claim(_borrower,
+            _collateralToken,
+            _collateralAmount,
+            _borrowToken,
+            _borrowAmount,
+            _expiryTime;
         _liquidateCollateral(_collateral);
     }
 
@@ -126,7 +177,10 @@ contract biddingPool is Ownable, ERC4626 {
     /// @notice Creates Withdrawal request
     /// @param _amount The amount to withdraw
     function requestWithdraw(uint256 _amount) public {
-        require(_amount <= maxRedeem(msg.sender), "More redeem than max");
+        if(_amount <= maxRedeem(msg.sender){
+            revert InvalidRedeem(msg.sender, _amount);
+        }
+        emit WithdrawalRequested(msg.sender, _amount);
         withdrawalQueue[withdrawalID] = WithdrawReq(msg.sender, _amount);
         withdrawalID++;
     }
@@ -138,11 +192,11 @@ contract biddingPool is Ownable, ERC4626 {
 
     function bidCollateral(uint256 _auctionID, uint256 _amount) public {
         Auction memory auction = auctions[_auctionID];
-        require(
-            block.timestamp < auction.startTime.add(auctionDuration),
-            AuctionEnded(_auctionID)
-        );
-        require(_amount > auction.highestBid, AuctionBidTooLow(_auctionID));
+        
+        if(block.timestamp < auction.startTime.add(auctionDuration)){
+            revert AuctionNotEnded(_auctionID);
+        }
+        if(_amount > auction.highestBid) {AuctionBidTooLow(_auctionID)};
         // Transfer bid to auction contract
         borrowToken.transferFrom(msg.sender, address(this), _amount);
         if (auction.highestBidder != address(0)) {
@@ -157,7 +211,7 @@ contract biddingPool is Ownable, ERC4626 {
         Auction memory auction = auctions[_auctionID];
         // Auction must be over
         // Not good for rebasing tokens
-        require(block.timestamp > auction.start, AuctionNotEnded(_auctionID));
+        if(block.timestamp > auction.start) {AuctionNotEnded(_auctionID);}
 
         if (
             auction.highestBidder != address(0) ||
@@ -188,7 +242,7 @@ contract biddingPool is Ownable, ERC4626 {
         returns (uint256 assets)
     {
         // Check for rounding error since we round down in previewRedeem.
-        require((assets = previewRedeem(shares)) != 0, "ZERO_ASSETS");
+        if((assets = previewRedeem(shares)) != 0) {revert InvalidRedeem(msg.sender, shares);}
 
         //beforeWithdraw(assets, shares);
 
@@ -199,38 +253,22 @@ contract biddingPool is Ownable, ERC4626 {
         asset.safeTransfer(receiver, assets);
     }
 
-    /// @notice Executes withdrawal request
-    function _withdrawalRequest() internal {
-        for (uint256 i = withdrawalQueue.length; i > 0; i--) {
-            WithdrawReq memory withReq = withdrawalQueue[i];
-            if (
-                IERC20.withdrawToken.balanceOf(address(this)) <
-                withReq.withdrawAmount
-            ) {
-                // Not enough balance to withdraw, can force withdraw by calling Withdraw method on ERC4626
-                /// @notice could break things
-                continue;
-            } else if (
-                withReq.withdrawAmount <=
-                ERC4626.maxRedeem(withReq.withdrawAddress)
-            ) {
-                // Call _redeem on ERC4626 instead of redeem
-                _redeem(withReq.withdrawAddress, withReq.withdrawAmount);
-                delete withdrawalQueue[i];
-            }
-        }
-    }
-
     function _isBorrowCollateralized(
-        address _account,
-        address _collateral,
-        address _borrowToken
+        address _borrower,
+        address _collateralToken,
+        uint256 _collateralAmount,
+        address _borrowToken,
+        uint256 _borrowAmount,
+        uint256 _expiryTime
     ) internal returns (bool) {
         // get position key
         bytes32 key = poolAddress.getPositionKey(
-            _account,
-            _collateral,
-            _borrowToken
+            _borrower,
+            _collateralToken,
+            _collateralAmount,
+            _borrowToken,
+            _borrowAmount,
+            _expiryTime
         );
         // gt loan information
         Loan memory loan = poolAddress.positions[key];
@@ -263,12 +301,13 @@ contract biddingPool is Ownable, ERC4626 {
         AuctionID++;
     }
 
+    /// @notice Liquidates collateral from a loan position
     function _liquidateCollateral(address _collateral) internal {
-        uint256 reservePrice = oracle.getAssetPrice(_collateral);
+        uint256 reservePrice = oracle.getAssetPrice(_collateral) *
+            LTVs[_collateral];
         if (reservePrice == 0) {
-            require(onlyOwner, "Collateral is not liquidatable");
             IERC20(_collateral).safeTransfer(
-                msg.sender,
+                owner,
                 IERC20(_collateral).balanceOf(address(this))
             );
         } else {
@@ -277,13 +316,23 @@ contract biddingPool is Ownable, ERC4626 {
     }
 
     function getPositionKey(
-        address _account,
+        address _borrower,
         address _collateralToken,
-        address _borrowToken
+        uint256 _collateralAmount,
+        address _borrowToken,
+        uint256 _borrowAmount,
+        uint256 _expiryTime
     ) public pure returns (bytes32) {
         return
             keccak256(
-                abi.encodePacked(_account, _collateralToken, _borrowToken)
+                abi.encodePacked(
+                    _borrower,
+                    _collateralToken,
+                    _collateralAmount,
+                    _borrowToken,
+                    _borrowAmount,
+                    _expiryTime
+                )
             );
     }
 }
