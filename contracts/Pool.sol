@@ -305,7 +305,7 @@ contract Pool is Ownable {
     //////////////////////////////////////////////////////////////*/
 
     function getPositionKey(
-        address _account,
+        address _borrower,
         address _collateralToken,
         uint256 _collateralAmount,
         address _borrowToken,
@@ -315,7 +315,7 @@ contract Pool is Ownable {
         return
             keccak256(
                 abi.encodePacked(
-                    _account,
+                    _borrower,
                     _collateralToken,
                     _collateralAmount,
                     _borrowToken,

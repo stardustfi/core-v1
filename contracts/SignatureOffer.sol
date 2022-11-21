@@ -66,27 +66,47 @@ contract biddingOffer {
         address _borrowToken
     ) public {
         // Check that the loan was made by the corresponding lender
-        bytes32 key = getPositionKey(_account, _collateral, _borrowToken);
-        require(loanBook[key] == msg.sender, "Not Lender for Loan");
-        poolAddress.claim(_account, _collateral, _borrowToken);
-        IERC20(_collateral).transfer(
+        bytes32 key = getPositionKey(
             msg.sender,
-            positions[key].collateralAmount
+            _collateralToken,
+            _collateralAmount,
+            _borrowToken,
+            _borrowAmount,
+            _expiryTime
         );
+        Loan memory newloan = positions[key];
+        require(newloan.lender == msg.sender, "Not Lender for Loan");
+        poolAddress.claim(_account, _collateral, _borrowToken);
+        IERC20(_collateral).transfer(msg.sender, newloan.collateralAmount);
     }
 
     /// @notice Retrieve funds if loan is paid back.
+    // TODO fix this up, also the pool contract deleted the loan
     function poolRefund(
-        address _account,
-        address _collateral,
+        address _borrower,
+        address _collateralToken,
+        uint256 _collateralAmount,
         address _borrowToken,
+        uint256 _borrowAmount,
+        uint256 _expiryTime,
         uint256 _loanID
     ) public {
+        bytes32 key = getPositionKey(
+            msg.sender,
+            _collateralToken,
+            _collateralAmount,
+            _borrowToken,
+            _borrowAmount,
+            _expiryTime
+        );
+        Loan memory newloan = positions[key];
+
         // Check that the loan was made by the corresponding lender
-        require(_loanID == loanBook[loans], "Loan ID does not match");
-        require();
-        // doesn't return accrued interest only principal - TODO
-        IERC20(_borrowToken).transfer(msg.sender, positions[key].borrowAmount);
+        require(newloan.lender == msg.sender, "Not Lender for Loan");
+        // Lazy evaluation, obvious exploit if collateral for one loan is borrowable token for another
+        // Issue with borrowAmount is that accrued interest not included
+        // also can't use amountToPayoff since Loan obj is deleted
+        positions.transfer(msg.sender, _borrowToken.balanceOf(address(this)));
     }
 
     function checkSig(
@@ -127,13 +147,23 @@ contract biddingOffer {
     }
 
     function getPositionKey(
-        address _account,
+        address _borrower,
         address _collateralToken,
-        address _borrowToken
+        uint256 _collateralAmount,
+        address _borrowToken,
+        uint256 _borrowAmount,
+        uint256 _expiryTime
     ) public pure returns (bytes32) {
         return
             keccak256(
-                abi.encodePacked(_account, _collateralToken, _borrowToken)
+                abi.encodePacked(
+                    _borrower,
+                    _collateralToken,
+                    _collateralAmount,
+                    _borrowToken,
+                    _borrowAmount,
+                    _expiryTime
+                )
             );
     }
 

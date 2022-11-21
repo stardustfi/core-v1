@@ -158,7 +158,7 @@ contract biddingPool is Ownable, ERC4626 {
             _collateralAmount,
             _borrowToken,
             _borrowAmount,
-            _expiryTime;
+            _expiryTime);
         _liquidateCollateral(_collateral);
     }
 
