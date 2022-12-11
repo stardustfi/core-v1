@@ -8,7 +8,7 @@ import {SafeMath} from "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Pool} from "./Pool.sol";
 
-/// @notice This is a simple version of a lending pool with vault logic but manual fills from the owner (likely a msig)
+/// @notice Simple version of lending pool with Vault logic, actions controlled by an owner (likely a msig)
 contract SimplePool is Ownable, ERC4626 {
     using SafeMath for uint256;
     using SafeERC20 for ERC20;
@@ -28,13 +28,13 @@ contract SimplePool is Ownable, ERC4626 {
     //////////////////////////////////////////////////////////////
     ///                            CONSTRUCTOR
     //////////////////////////////////////////////////////////////
+
     /// @notice Constructor
     /// @param _pool address of the pool contract
     /// @param _borrowToken Address of Borrow Token
     constructor(
         Pool _pool,
-        ERC20 _borrowToken,
-        uint256 _maxDuration
+        ERC20 _borrowToken
     ) ERC4626(_borrowToken, "Bidding Pool", "BIDPOOL") {
         pool = _pool;
         borrowToken = _borrowToken;
@@ -77,7 +77,7 @@ contract SimplePool is Ownable, ERC4626 {
         address owner
     ) public view virtual override returns (uint256) {}
 
-    // /// @notice Executes withdrawal request
+    /// @notice Executes withdrawal queue
     modifier withdrawalRequest() {
         _;
         for (uint256 i = withdrawalQueue.length; i > 0; i--) {
@@ -98,6 +98,12 @@ contract SimplePool is Ownable, ERC4626 {
     //                             POOL FUNCTIONS
     // //////////////////////////////////////////////////////////////
     /// @notice Fills a set loan position if it matches standard
+    /// @param _borrower Borrower address
+    /// @param _collateralToken The collateral token
+    /// @param _collateralAmount The collateral amount
+    /// @param _borrowToken The token being borrowed
+    /// @param _borrowAmount The amount of borrow token being borrowed
+    /// @param _expiryTime The expiry of the loan
     function poolFill(
         address _borrower,
         address _collateralToken,
@@ -116,8 +122,14 @@ contract SimplePool is Ownable, ERC4626 {
         );
     }
 
-    /// @notice Claims collateral from a loan position if not repaid
-    /// claim logic is handled in the pool contract, lazy claim
+    /// @notice Claims collateral from a loan position if there is a default.
+    /// @dev Claim logic is handled in the pool contract, lazy claim
+    /// @param _borrower Borrower address
+    /// @param _collateralToken The collateral token
+    /// @param _collateralAmount The collateral amount
+    /// @param _borrowToken The token being borrowed
+    /// @param _borrowAmount The amount of borrow token being borrowed
+    /// @param _expiryTime The expiry of the loan
     function poolClaim(
         address _borrower,
         address _collateralToken,

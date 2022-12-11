@@ -47,6 +47,8 @@ contract Pool is Ownable {
     error PositionAlreadySettled(bytes32 key);
     error SafeTransferFailed(address to, uint256 amount);
 
+    /// @notice Provides
+    /// @return All the loans
     function fetchAllPositions() external view returns (Loan[] memory) {
         Loan[] memory allPositions = new Loan[](positionIds.length);
         for (uint256 i = 0; i < positionIds.length; i++) {
@@ -61,6 +63,10 @@ contract Pool is Ownable {
 
     constructor() {}
 
+    /// @dev Returns whether the loan has nonzero collateral or expiry
+    /// @param _collateralToken The collateral token
+    /// @param _collateralAmount The collateral amount
+    /// @param _expiryTime The expiry of the loan (usually some date in the Future)
     modifier verifyLoanCreation(
         address _collateralToken,
         uint256 _collateralAmount,
@@ -69,7 +75,8 @@ contract Pool is Ownable {
         if (_collateralAmount == 0) {
             revert InvalidCollateralAmount(_collateralAmount);
         }
-        if (_expiryTime == 0) {
+        if (_expiryTime < block.timestamp) {
+            // Loan is in the past. Loan can expire same block if it's essentially a market sell order
             revert InvalidExpiryTime(_expiryTime);
         }
         _;
@@ -79,7 +86,12 @@ contract Pool is Ownable {
                                EXTERNAL
     //////////////////////////////////////////////////////////////*/
 
-    /// @dev Create a Loan that borrows baseToken as a borrower putting a shitcoin as collateral
+    /// @dev Create a Loan that borrows baseToken as a borrower putting a s*coin as collateral
+    /// @param _collateralToken The collateral token
+    /// @param _collateralAmount The collateral amount
+    /// @param _borrowToken The token being borrowed (Digit agnostic)
+    /// @param _borrowAmount The amount of borrow token being borrowed – ideally no rebasing tokens
+    /// @param _expiryTime The expiry of the loan (usually some date in the Future)
     function create(
         address _collateralToken,
         uint256 _collateralAmount,
@@ -122,7 +134,12 @@ contract Pool is Ownable {
         );
     }
 
-    /// @dev Cancel a Loan you created
+    /// @dev Cancel a Loan borrower has created
+    /// @param _collateralToken The collateral token
+    /// @param _collateralAmount The collateral amount
+    /// @param _borrowToken The token being borrowed
+    /// @param _borrowAmount The amount of borrow token being borrowed
+    /// @param _expiryTime The expiry of the loan
     function cancel(
         address _collateralToken,
         uint256 _collateralAmount,
@@ -139,6 +156,12 @@ contract Pool is Ownable {
             _borrowAmount,
             _expiryTime
         );
+
+        // Check if position has been filled or not already
+        if (!positions[key].isActive) {
+            revert PositionAlreadyFilled(key);
+        }
+
         delete positions[key];
         for (uint256 i = 0; i < positionIds.length; i++) {
             if (positionIds[i] == key) {
@@ -152,6 +175,12 @@ contract Pool is Ownable {
     }
 
     /// @dev Fill a loan as a lender putting up USDC for a shitcoin
+    /// @param _borrower Borrower address
+    /// @param _collateralToken The collateral token
+    /// @param _collateralAmount The collateral amount
+    /// @param _borrowToken The token being borrowed
+    /// @param _borrowAmount The amount of borrow token being borrowed
+    /// @param _expiryTime The expiry of the loan
     function fill(
         address _borrower,
         address _collateralToken,
@@ -199,7 +228,12 @@ contract Pool is Ownable {
         newLoan.startTime = block.timestamp;
     }
 
-    function amountToPayoff(bytes32 key) public view returns (uint256) {
+    /// @dev Provided a key, provide the details on how much to pay back at present
+    /// @param key the keccak encoded loan
+    /// @return PayoffAmount the amount to pay back
+    function amountToPayoff(
+        bytes32 key
+    ) public view returns (uint256 PayoffAmount) {
         uint256 subtotal = positions[key].borrowAmount +
             ((block.timestamp - positions[key].startTime) * ANNUAL_RATE);
 
@@ -210,10 +244,16 @@ contract Pool is Ownable {
                 ((block.timestamp - positions[key].expiryTime) *
                     COLLATERAL_EXPIRY_RATE);
         }
-        return subtotal / (SECONDS_IN_YEAR * BASIS_POINTS_DIVISOR);
+        PayoffAmount = subtotal / (SECONDS_IN_YEAR * BASIS_POINTS_DIVISOR);
     }
 
-    /// @dev can be called before expiry
+    /// @dev Repay ends loan by full repayment, and can be called before loan expiry
+    /// @param _borrower Borrower address
+    /// @param _collateralToken The collateral token
+    /// @param _collateralAmount The collateral amount
+    /// @param _borrowToken The token being borrowed
+    /// @param _borrowAmount The amount of borrow token being borrowed
+    /// @param _expiryTime The expiry of the loan
     function repay(
         address _borrower,
         address _collateralToken,
@@ -238,7 +278,7 @@ contract Pool is Ownable {
             revert PositionAlreadySettled(key);
         }
 
-        // calculate interest rate for borrower and transfer to lender
+        // Calculate interest + principal for borrower and transfer to lender
         uint256 _amountToPayoff = amountToPayoff(key);
         IERC20(_borrowToken).safeTransferFrom(
             msg.sender,
@@ -256,14 +296,20 @@ contract Pool is Ownable {
             positions[key].collateralAmount
         );
 
-        // Change struct
+        // Update struct
         Loan storage newLoan = positions[key];
         newLoan.borrower = msg.sender;
         newLoan.isSettled = true;
     }
 
-    /// @dev Claim the shitcoin whose borrow of USDC was not repaid by borrower
-    /// @dev can be called after expiry, although can receive the accrued penalty interest if so desired.
+    /// @dev Claim the collateral where borrow hasn't been repaid after expiry
+    /// @dev Claim can be called after expiry, and can receive the accrued penalty interest if so desired.
+    /// @param _borrower Borrower address
+    /// @param _collateralToken The collateral token
+    /// @param _collateralAmount The collateral amount
+    /// @param _borrowToken The token being borrowed
+    /// @param _borrowAmount The amount of borrow token being borrowed
+    /// @param _expiryTime The expiry of the loan
     function claim(
         address _borrower,
         address _collateralToken,
@@ -303,7 +349,14 @@ contract Pool is Ownable {
     /*//////////////////////////////////////////////////////////////
                             INTERNAL LOGIC
     //////////////////////////////////////////////////////////////*/
-
+    /// @dev Encode loan details into a bytes32
+    /// @param _borrower Borrower address
+    /// @param _collateralToken The collateral token
+    /// @param _collateralAmount The collateral amount
+    /// @param _borrowToken The token being borrowed
+    /// @param _borrowAmount The amount of borrow token being borrowed
+    /// @param _expiryTime The expiry of the loan
+    /// @return Return the encoded version
     function getPositionKey(
         address _borrower,
         address _collateralToken,
