@@ -41,11 +41,13 @@ contract Pool is Ownable {
     error InvalidCollateral(address collateralToken);
     error InvalidCollateralAmount(uint256 collateralAmount);
     error InvalidExpiryTime(uint256 expiryTime);
+    error InsufficientCollateral(uint256 collateralAmount);
     error PositionAlreadyCreated(bytes32 key);
     error PositionAlreadyExpired(bytes32 key);
     error PositionAlreadyFilled(bytes32 key);
     error PositionAlreadySettled(bytes32 key);
-    error SafeTransferFailed(address to, uint256 amount);
+    error SafeTransferFailed(address token, uint256 amount);
+    error NotEnoughAllowance(address token, uint256 amount);
 
     /// @notice Provides
     /// @return All the loans
@@ -63,7 +65,7 @@ contract Pool is Ownable {
 
     constructor() {}
 
-    /// @dev Returns whether the loan has nonzero collateral or expiry
+    /// @dev Returns whether the loan/offer has nonzero collateral or expiry
     /// @param _collateralToken The collateral token
     /// @param _collateralAmount The collateral amount
     /// @param _expiryTime The expiry of the loan (usually some date in the Future)
@@ -87,12 +89,13 @@ contract Pool is Ownable {
     //////////////////////////////////////////////////////////////*/
 
     /// @dev Create a Loan that borrows baseToken as a borrower putting a s*coin as collateral
+    /// @notice You can't create a loan if you already have an offer for the same params (keys clash)
     /// @param _collateralToken The collateral token
     /// @param _collateralAmount The collateral amount
     /// @param _borrowToken The token being borrowed (Digit agnostic)
     /// @param _borrowAmount The amount of borrow token being borrowed – ideally no rebasing tokens
     /// @param _expiryTime The expiry of the loan (usually some date in the Future)
-    function create(
+    function createLoan(
         address _collateralToken,
         uint256 _collateralAmount,
         address _borrowToken,
@@ -132,6 +135,54 @@ contract Pool is Ownable {
             address(this),
             _collateralAmount
         );
+    }
+
+    /// @dev Create a Loan that borrows baseToken as a borrower putting a s*coin as collateral
+    /// @param _collateralToken The collateral token
+    /// @param _collateralAmount The collateral amount
+    /// @param _borrowToken The token being borrowed (Digit agnostic)
+    /// @param _borrowAmount The amount of borrow token being borrowed – ideally no rebasing tokens
+    /// @param _expiryTime The expiry of the loan (usually some date in the Future)
+    function createOffer(
+        address _collateralToken,
+        uint256 _collateralAmount,
+        address _borrowToken,
+        uint256 _borrowAmount,
+        uint256 _expiryTime
+    )
+        external
+        verifyLoanCreation(_collateralToken, _collateralAmount, _expiryTime)
+    {
+        // v1: make this a signed process
+        if (
+            IERC20(_borrowToken).allowance(msg.sender, address(this)) >=
+            _borrowAmount
+        ) {
+            revert NotEnoughAllowance(_borrowToken, _borrowAmount);
+        }
+        // get position
+        bytes32 key = getPositionKey(
+            msg.sender,
+            _collateralToken,
+            _collateralAmount,
+            _borrowToken,
+            _borrowAmount,
+            _expiryTime
+        );
+        if (positions[key].collateral != address(0)) {
+            revert PositionAlreadyCreated(key);
+        }
+
+        // write order in storage
+        Loan storage newLoan = positions[key];
+        newLoan.lender = msg.sender;
+        newLoan.isActive = true;
+        newLoan.collateral = _collateralToken;
+        newLoan.collateralAmount = _collateralAmount;
+        newLoan.borrowToken = _borrowToken;
+        newLoan.borrowAmount = _borrowAmount;
+        newLoan.expiryTime = _expiryTime;
+        positionIds.push(key);
     }
 
     /// @dev Cancel a Loan borrower has created
@@ -175,6 +226,7 @@ contract Pool is Ownable {
     }
 
     /// @dev Fill a loan as a lender putting up USDC for a shitcoin
+    /// @notice You can fill an offer
     /// @param _borrower Borrower address
     /// @param _collateralToken The collateral token
     /// @param _collateralAmount The collateral amount
@@ -207,6 +259,10 @@ contract Pool is Ownable {
         if (positions[key].expiryTime < block.timestamp) {
             revert PositionAlreadyExpired(key);
         }
+        // Check if the position is actually a loan offer
+        if (positions[key].lender == address(0)) {
+            revert InvalidPosition(key);
+        }
 
         // get requested borrow amount
         uint256 requestedAmount = positions[key].borrowAmount;
@@ -216,13 +272,79 @@ contract Pool is Ownable {
         // transfer USDC to borrower
         IERC20(_borrowToken).safeTransferFrom(
             msg.sender,
-            address(this),
+            _borrower,
             requestedAmount
         );
-        IERC20(_borrowToken).safeTransfer(_borrower, requestedAmount);
 
         // write to storage
         Loan storage newLoan = positions[key];
+        newLoan.lender = msg.sender;
+        newLoan.isActive = true;
+        newLoan.startTime = block.timestamp;
+    }
+
+    /// @dev Fill an offer with a loan
+    /// @param _borrower Borrower address
+    /// @param _collateralToken The collateral token
+    /// @param _collateralAmount The collateral amount
+    /// @param _borrowToken The token being borrowed
+    /// @param _borrowAmount The amount of borrow token being borrowed
+    /// @param _expiryTime The expiry of the loan
+    function fillOffer(
+        address _borrower,
+        address _collateralToken,
+        uint256 _collateralAmount,
+        address _borrowToken,
+        uint256 _borrowAmount,
+        uint256 _expiryTime
+    ) external {
+        // get position
+        bytes32 key = getPositionKey(
+            _borrower,
+            _collateralToken,
+            _collateralAmount,
+            _borrowToken,
+            _borrowAmount,
+            _expiryTime
+        );
+        if (positions[key].collateral == address(0)) {
+            revert InvalidPosition(key);
+        }
+        if (!positions[key].isActive) {
+            revert PositionAlreadyFilled(key);
+        }
+        if (positions[key].expiryTime < block.timestamp) {
+            revert PositionAlreadyExpired(key);
+        }
+        // Check if it is a loan request and not an offer
+        if (positions[key].borrower == address(0)) {
+            revert InvalidPosition(key);
+        }
+        // Check if borrow is fully collateralized. Can be overcollateralized
+        if (positions[key].collateralAmount < _collateralAmount) {
+            revert InsufficientCollateral(positions[key].collateralAmount);
+        }
+
+        // (v1): Spend the signed tx, if we are implementing the signed tx
+
+        // transfer collateral to contract
+        IERC20(_collateralToken).safeTransferFrom(
+            msg.sender,
+            address(this),
+            _collateralAmount
+        );
+
+        // transfer USDC to borrower
+        IERC20(_borrowToken).safeTransferFrom(
+            positions[key].lender,
+            _borrower,
+            _borrowAmount
+        );
+
+        // write to storage
+        Loan storage newLoan = positions[key];
+        // Since loan could be overcollateralized
+        newLoan.collateralAmount = _collateralAmount;
         newLoan.lender = msg.sender;
         newLoan.isActive = true;
         newLoan.startTime = block.timestamp;
@@ -349,6 +471,7 @@ contract Pool is Ownable {
     /*//////////////////////////////////////////////////////////////
                             INTERNAL LOGIC
     //////////////////////////////////////////////////////////////*/
+
     /// @dev Encode loan details into a bytes32
     /// @param _borrower Borrower address
     /// @param _collateralToken The collateral token
